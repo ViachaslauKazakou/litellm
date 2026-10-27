@@ -1,0 +1,57 @@
+# LiteLLM configuration file for production environment
+model_list:
+
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: embed-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-6-luna
+    litellm_params:
+      model: openai/gpt-6-luna
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: deepseek-v4-flash
+    litellm_params:
+      model: deepseek/deepseek-v4-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  - model_name: qwen3.7-flash
+    litellm_params:
+      model: openai/qwen3.7-flash-2026-02-23
+      api_key: os.environ/DASHSCOPE_API_KEY
+      api_base: https://ws-wywl33k7gbbt39dr.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      input_cost_per_token: 0.00000003
+      output_cost_per_token: 0.00000013
+
+  - model_name: qwen3.5:2b-q4_K_M
+    litellm_params:
+      model: ollama/qwen3.5:2b-q4_K_M
+      api_base: http://ollama:11434
+      input_cost_per_token: 5.0e-06
+      output_cost_per_token: 1.5e-05
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
+
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  drop_params: true

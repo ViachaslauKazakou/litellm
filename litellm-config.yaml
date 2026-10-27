@@ -1,0 +1,114 @@
+# Use only for local development and testing. For production, use litellm-config-prod.yaml
+model_list:
+
+  - model_name: gpt-6-luna
+    litellm_params:
+      model: openai/gpt-6-luna
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: elite-haiku-5-5
+    litellm_params:
+      model: openai/global.anthropic.claude-haiku-5-5
+      api_key: os.environ/ELITELLM_API_KEY
+      api_base: https://next.elitea.ai/llm/v1
+      allowed_openai_params: ["reasoning_effort"]
+
+  - model_name: elite-embed-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/ELITELLM_API_KEY
+      api_base: https://next.elitea.ai/llm/v1
+
+
+  - model_name: elite-claude-sonnet-5.5
+    litellm_params:
+      model: openai/eu.anthropic.claude-sonnet-5-5
+      api_key: os.environ/ELITELLM_API_KEY
+      api_base: https://next.elitea.ai/llm/v1
+
+  - model_name: elite-gpt-5.6-Luna
+    litellm_params:
+      model: openai/global.openai.gpt-5.6-luna
+      api_key: os.environ/ELITELLM_API_KEY
+      api_base: https://next.elitea.ai/llm/v1
+
+  - model_name: elite-gpt-5.6-Terra
+    litellm_params:
+      model: openai/global.openai.gpt-5.6-terra
+      api_key: os.environ/ELITELLM_API_KEY
+      api_base: https://next.elitea.ai/llm/v1
+
+  - model_name: qwen3.7-flash
+    litellm_params:
+      model: openai/qwen3.7-flash-2026-02-23
+      api_key: os.environ/DASHSCOPE_API_KEY
+      api_base: os.environ/DASHSCOPE_API_BASE
+      input_cost_per_token: 3.0e-08
+      output_cost_per_token: 1.3e-07
+
+  - model_name: embed-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: text-embedding
+    litellm_params:
+      model: text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: qwen3.5:2b-q4_K_M
+    litellm_params:
+      model: ollama/qwen3.5:2b-q4_K_M
+      api_base: http://ollama:11434
+      input_cost_per_token: 3.0e-06
+      output_cost_per_token: 1.3e-05
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
+
+  - model_name: qwen3.5:0.8b
+    litellm_params:
+      model: ollama/qwen3.5:0.8b
+      api_base: http://ollama:11434
+      input_cost_per_token: 3.0e-07
+      output_cost_per_token: 1.3e-06
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
+
+  - model_name: granite4:3b-h
+    litellm_params:
+      model: ollama/granite4:3b-h
+      api_base: http://ollama:11434
+      input_cost_per_token: 3.0e-07
+      output_cost_per_token: 1.3e-06
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+litellm_settings:
+  drop_params: true

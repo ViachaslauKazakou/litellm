@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: learn_postgres_dev
+    environment:
+    - POSTGRES_DB=postgres
+    - POSTGRES_USER=docker
+    - POSTGRES_PASSWORD=docker
+    - POSTGRES_HOST_AUTH_METHOD=trust
+    ports:
+    - 5433:5432
+    volumes:
+    - postgres_dev_data:/var/lib/postgresql/data
+    networks:
+    - ai_network_dev
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U docker -d postgres
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.5'
+
+  litellm-db-init:
+    image: postgres:15-alpine
+    container_name: litellm_db_init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+    - ai_network_dev
+    entrypoint: "bash -c \" until psql postgresql://docker:docker@postgres:5432/postgres\
+      \ -tc \\\"SELECT 1 FROM pg_database WHERE datname = 'litellm'\\\" | grep -q\
+      \ 1; do\n  psql postgresql://docker:docker@postgres:5432/postgres -c \\\"CREATE\
+      \ DATABASE litellm\\\" 2>/dev/null || true;\n  break;\ndone\"\n"
+    restart: 'no'
+  litellm:
+    image: ghcr.io/berriai/litellm-database:v1.92.0
+    container_name: litellm_dev
+    depends_on:
+      litellm-db-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://docker:docker@postgres:5432/litellm
+    env_file: .env.litellm
+    networks:
+    - ai_network_dev
+    volumes:
+    - ./litellm-config.yaml:/app/config.yaml:ro
+    ports:
+    - 4000:4000
+    restart: unless-stopped
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import sys, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:4000/health/liveness',
+        timeout=5); sys.exit(0 if 200 <= r.status < 400 else 1)
+      interval: 120s
+      timeout: 15s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1.2G
+          cpus: '2'
+    command:
+    - --config
+    - /app/config.yaml
+    - --port
+    - '4000'
+    
+volumes:
+  postgres_dev_data:
+    driver: local
+
+networks:
+  ai_network_dev:
+    driver: bridge

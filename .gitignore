@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.env
+.env.prod
+.env.litellm.dev
+LITELLM_CONFIG.yml

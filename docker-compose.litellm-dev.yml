@@ -1,0 +1,85 @@
+services:
+  # Контрольный клиент подключается к уже работающей PostgreSQL на хосте.
+  # Этот сервис не запускает и не изменяет контейнер PostgreSQL.
+  postgres-check:
+    image: postgres:15-alpine
+    profiles: ["tools"]
+    networks: [learnservice]
+    entrypoint: ["pg_isready"]
+    command:
+      - "-h"
+      - "${POSTGRES_HOST:-postgres}"
+      - "-p"
+      - "${POSTGRES_PORT:-5432}"
+      - "-U"
+      - "${POSTGRES_USER:-docker}"
+      - "-d"
+      - "postgres"
+      - "-t"
+      - "3"
+
+  # Создаёт только отдельную БД для LiteLLM внутри существующего PostgreSQL.
+  litellm-db-init:
+    image: postgres:15-alpine
+    networks: [learnservice]
+    environment:
+      PGHOST: "${POSTGRES_HOST:-postgres}"
+      PGPORT: "${POSTGRES_PORT:-5432}"
+      PGUSER: "${POSTGRES_USER:-docker}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:-docker}"
+      LITELLM_DB_NAME: "${LITELLM_DB_NAME:-litellm_standalone_dev}"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        psql -d postgres -v ON_ERROR_STOP=1 -v db_name="$${LITELLM_DB_NAME}" <<'SQL'
+        SELECT format('CREATE DATABASE %I', :'db_name')
+        WHERE NOT EXISTS (
+          SELECT 1 FROM pg_database WHERE datname = :'db_name'
+        )
+        \gexec
+        SQL
+    restart: "no"
+
+  litellm:
+    container_name: litellm_dev
+    image: ghcr.io/berriai/litellm-database:v1.92.0
+    networks: [learnservice]
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-docker}:${POSTGRES_PASSWORD:-docker}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${LITELLM_DB_NAME:-litellm_standalone_dev}"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is missing; run make litellm-dev-up to generate the local env file}"
+      LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:?LITELLM_SALT_KEY is missing; run make litellm-dev-up to generate the local env file}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ELITELLM_API_KEY: "${ELITELLM_API_KEY:-}"
+      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
+      DASHSCOPE_API_BASE: "${DASHSCOPE_API_BASE:-}"
+      STORE_MODEL_IN_DB: "True"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    ports:
+      - target: 4000
+        published: "4000"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; r=urllib.request.urlopen('http://localhost:4000/health/liveness', timeout=5); sys.exit(0 if 200 <= r.status < 400 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '4'
+
+networks:
+  learnservice:
+    external: true
+    name: "${LEARN_SERVICE_NETWORK:-learn-service_ai_network_dev}"

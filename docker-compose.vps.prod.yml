@@ -1,0 +1,393 @@
+name: learn-service
+
+services:
+
+  # ─────────────────────────────────────────────
+  # NGINX — reverse proxy, reload без рестарта
+  # ─────────────────────────────────────────────
+  nginx:
+    image: nginx:stable-alpine
+    container_name: learn_nginx_prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/learn-service/vps_conf/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /opt/learn-service/src/static:/app/src/static:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    networks:
+      - prod_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 16M
+          cpus: '0.2'
+        reservations:
+          memory: 8M
+          cpus: '0.1'
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────
+  # APP — пересобирается и рестартует при деплое
+  # ─────────────────────────────────────────────
+  learn_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: learn-service:prod
+    container_name: learn_app_prod
+    expose:
+      - "8000"
+    environment:
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_NUM_PARALLEL: "3"
+    env_file:
+      - .env.prod
+    volumes:
+      - /opt/learn-service/logs:/app/logs
+      - /opt/learn-service/media:/media:rw
+      # Production release notes are host-owned and must survive deployments.
+      # Mount the directory, not the file: the admin editor needs to replace
+      # the file atomically and create release.json.bak.
+      - /opt/learn-service/volume:/app/volume:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - prod_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      smtp:
+        condition: service_started
+      litellm:
+        condition: service_healthy
+    command: ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "-b", "0.0.0.0:8000", "-t", "660", "--forwarded-allow-ips=*", "src.main:app"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '2'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "2"
+
+  # ─────────────────────────────────────────────
+  # WORKER — пересобирается и рестартует при деплое
+  # ─────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: queue/docker/Dockerfile.prod
+    image: learn-service-worker:prod
+    container_name: learn_worker_prod
+    environment:
+      PYTHONPATH: /app/queue:/app
+      PYTHONUNBUFFERED: "1"
+      MAIN_APP_INTERNAL_TOKEN: ${AI_SERVICE_API_KEY:?AI_SERVICE_API_KEY must be set}
+      MAIN_APP_BASE_URL: http://learn_app:8000
+      OLLAMA_NUM_PARALLEL: "3"
+      OLLAMA_SLOT_RETRY_SECONDS: "60"
+    env_file:
+      - .env.prod
+    volumes:
+      - /opt/learn-service/volume:/app/volume
+      - /opt/learn-service/logs:/app/logs
+      - /opt/learn-service/media:/media:rw
+    networks:
+      - prod_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 32M
+          cpus: '0.1'
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "2"
+
+  # ─────────────────────────────────────────────
+  # MIGRATIONS — одноразовый запуск, не рестартует
+  # ─────────────────────────────────────────────
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile.migration.prod
+    image: learn-service-migrations:prod
+    container_name: learn_migrations_prod
+    env_file:
+      - .env.prod
+    environment:
+      PYTHONPATH: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - prod_network
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+  # ─────────────────────────────────────────────
+  # POSTGRES — не трогаем, только миграции
+  # ─────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: learn_postgres_prod
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-learn_db}
+      POSTGRES_USER: ${POSTGRES_USER:-learn_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-strong-password}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    env_file:
+      - .env.prod
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - prod_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-learn_user} -d ${POSTGRES_DB:-learn_db}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '2'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "2"
+
+  # ─────────────────────────────────────────────
+  # REDIS — не трогаем
+  # ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: learn_redis_prod
+    volumes:
+      - redis_data:/data
+    networks:
+      - prod_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+          cpus: '0.2'
+        reservations:
+          memory: 16M
+          cpus: '0.1'
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  # ─────────────────────────────────────────────
+  # LITELLM — не трогаем если живой
+  # ─────────────────────────────────────────────
+  litellm-db-init:
+    image: postgres:15-alpine
+    container_name: learn_litellm_db_init_prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - prod_network
+    entrypoint: >
+      bash -c "
+      until psql postgresql://${POSTGRES_USER:-learn_user}:${POSTGRES_PASSWORD:-change-me-strong-password}@postgres:5432/${POSTGRES_DB:-learn_db} -tc \"SELECT 1 FROM pg_database WHERE datname = 'litellm'\" | grep -q 1; do
+        psql postgresql://${POSTGRES_USER:-learn_user}:${POSTGRES_PASSWORD:-change-me-strong-password}@postgres:5432/${POSTGRES_DB:-learn_db} -c \"CREATE DATABASE litellm\" 2>/dev/null || true;
+        break;
+      done"
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "1"
+
+  litellm:
+    image: ghcr.io/berriai/litellm-database:v1.92.0
+    container_name: learn_litellm_prod
+    depends_on:
+      litellm-db-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-learn_user}:${POSTGRES_PASSWORD:-change-me-strong-password}@postgres:5432/litellm"
+      SERVER_ROOT_PATH: "/litellm"
+      LITELLM_PUBLIC_URL: "https://learnservice.online/litellm"
+      PROXY_BASE_URL: "https://learnservice.online/litellm"
+    env_file:
+      - .env.prod
+    networks:
+      - prod_network
+    volumes:
+      - /opt/learn-service/litellm-config-prod.yaml:/app/config.yaml:ro
+    expose:
+      - "4000"
+    healthcheck:
+      test: [
+        "CMD",
+        "python",
+        "-c",
+        "import sys, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:4000/health/liveness', timeout=5); sys.exit(0 if 200 <= r.status < 400 else 1)"
+      ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1.3G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '1'
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "2"
+
+  # ─────────────────────────────────────────────
+  # SMTP — не трогаем
+  # ─────────────────────────────────────────────
+  smtp:
+    build:
+      context: .
+      dockerfile: docker/smtp/Dockerfile
+    container_name: learn_smtp_prod
+    hostname: mail.learnservice.online
+    environment:
+      - MYHOSTNAME=mail.learnservice.online
+      - MYDOMAIN=learnservice.online
+      - SMTP_RELAYHOST=${SMTP_RELAYHOST:-}
+      - SMTP_SASL_PASSWD=${SMTP_SASL_PASSWD:-}
+    networks:
+      prod_network:
+        aliases:
+          - smtp
+    volumes:
+      - smtp_queue:/var/spool/postfix
+      - smtp_logs:/var/log/mail
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+          cpus: '0.2'
+        reservations:
+          memory: 16M
+          cpus: '0.1'
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────
+  # OLLAMA — локальные модели для LLM
+  # ─────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:0.40.6
+    container_name: ollama_prod
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      # Кол-во параллельных слотов инференса (каждый слот держит свой KV-кэш; 2 слота ~ +1.5GB RAM)
+      - OLLAMA_NUM_PARALLEL=4
+      # Число потоков инференса = числу выделенных vCPU (см. deploy.limits.cpus)
+      - OLLAMA_NUM_THREAD=4
+      # Кол-во одновременно загруженных моделей в память 
+      - OLLAMA_MAX_LOADED_MODELS=1
+      # Очередь входящих запросов сверх активных слотов
+      - OLLAMA_MAX_QUEUE=64
+      # Flash Attention снижает потребление памяти под KV-кэш
+      - OLLAMA_FLASH_ATTENTION=1
+      # Квантование KV-кэша q8_0 экономит RAM при минимальной потере качества (требует flash attention)
+      - OLLAMA_KV_CACHE_TYPE=q8_0
+      # Держим модель в памяти постоянно (быстрый отклик, ~2-3GB RAM)
+      - OLLAMA_KEEP_ALIVE=-1
+    volumes:
+      - ollama_models:/root/.ollama/models
+      - ollama_data:/root/.ollama
+      - /opt/learn-service/ollama/init.sh:/init.sh
+    networks:
+      - prod_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 5.5G
+          cpus: '3.0'
+        reservations:
+          memory: 4G
+          cpus: '1.0'
+    healthcheck:
+      test:
+        - CMD
+        - ollama
+        - list
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    command:
+      - /init.sh
+    entrypoint: /bin/sh
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "2"
+
+volumes:
+  postgres_data:
+  redis_data:
+  smtp_queue:
+  smtp_logs:
+  ollama_models:
+  ollama_data:
+
+networks:
+  prod_network:
+    name: learn_service_prod_network
+    driver: bridge
+    external: true
