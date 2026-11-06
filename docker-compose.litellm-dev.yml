@@ -44,16 +44,19 @@ services:
     container_name: litellm_dev
     image: ghcr.io/berriai/litellm-database:v1.92.0
     networks: [learnservice]
+
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER:-docker}:${POSTGRES_PASSWORD:-docker}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${LITELLM_DB_NAME:-litellm_standalone_dev}"
-      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is missing; run make litellm-dev-up to generate the local env file}"
-      LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:?LITELLM_SALT_KEY is missing; run make litellm-dev-up to generate the local env file}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      ELITELLM_API_KEY: "${ELITELLM_API_KEY:-}"
-      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
-      DASHSCOPE_API_BASE: "${DASHSCOPE_API_BASE:-}"
+      # LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is missing; run make litellm-dev-up to generate the local env file}"
+      # LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:?LITELLM_SALT_KEY is missing; run make litellm-dev-up to generate the local env file}"
+      # OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      # ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # ELITELLM_API_KEY: "${ELITELLM_API_KEY:-}"
+      # DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
+      # DASHSCOPE_API_BASE: "${DASHSCOPE_API_BASE:-}"
       STORE_MODEL_IN_DB: "True"
+    env_file:
+      - .env.litellm.dev
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     ports:

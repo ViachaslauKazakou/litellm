@@ -27,12 +27,21 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 compose() {
-  "${COMPOSE[@]}" \
-    --project-name "$PROJECT_NAME" \
-    --project-directory "$ROOT_DIR" \
-    --env-file "$ENV_FILE" \
-    -f "$COMPOSE_FILE" \
-    "$@"
+  (
+    # The private env file is the source of truth. Do not let exported host
+    # variables (for example OPENAI_API_KEY=proxy-handled) override it.
+    unset POSTGRES_HOST POSTGRES_PORT POSTGRES_USER POSTGRES_PASSWORD
+    unset LITELLM_DB_NAME LITELLM_MASTER_KEY LITELLM_SALT_KEY
+    unset OPENAI_API_KEY ANTHROPIC_API_KEY ELITELLM_API_KEY
+    unset DASHSCOPE_API_KEY DASHSCOPE_API_BASE
+
+    "${COMPOSE[@]}" \
+      --project-name "$PROJECT_NAME" \
+      --project-directory "$ROOT_DIR" \
+      --env-file "$ENV_FILE" \
+      -f "$COMPOSE_FILE" \
+      "$@"
+  )
 }
 
 generate_secret() {

@@ -1,0 +1,89 @@
+name: LiteLLM VPS Telegram Notifications
+
+on:
+  workflow_run:
+    workflows:
+      - Deploy LiteLLM to VPS
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      status:
+        description: Status for a manual test message
+        required: true
+        default: success
+        type: choice
+        options:
+          - success
+          - failure
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: Send Telegram notification
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+    steps:
+      - name: Build notification
+        id: message
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_STATUS: ${{ inputs.status }}
+          DEPLOY_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          DEPLOY_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DEPLOY_ACTOR: ${{ github.event.workflow_run.actor.login }}
+          DEPLOY_URL: ${{ github.event.workflow_run.html_url }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            conclusion="${MANUAL_STATUS:-success}"
+            branch="$REF_NAME"
+            actor="$ACTOR"
+            run_url="${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}"
+          else
+            conclusion="$DEPLOY_CONCLUSION"
+            branch="$DEPLOY_BRANCH"
+            actor="$DEPLOY_ACTOR"
+            run_url="$DEPLOY_URL"
+          fi
+
+          case "$conclusion" in
+            success) title='✅ LiteLLM production deploy succeeded' ;;
+            failure) title='❌ LiteLLM production deploy failed' ;;
+            cancelled) title='⚠️ LiteLLM production deploy cancelled' ;;
+            *) title="ℹ️ LiteLLM deploy finished: ${conclusion}" ;;
+          esac
+
+          {
+            printf 'message<<EOF\n'
+            printf '%s\n\n' "$title"
+            printf 'Repository: %s\n' "$REPOSITORY"
+            printf 'Branch: %s\n' "$branch"
+            printf 'Actor: %s\n' "$actor"
+            printf 'Run: %s\n' "$run_url"
+            printf 'EOF\n'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Telegram message
+        if: ${{ env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != '' }}
+        env:
+          MESSAGE: ${{ steps.message.outputs.message }}
+        run: |
+          set -euo pipefail
+          args=(--data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${MESSAGE}" --data-urlencode "disable_web_page_preview=true")
+          if [[ -n "${TELEGRAM_THREAD_ID:-}" ]]; then
+            args+=(--data-urlencode "message_thread_id=${TELEGRAM_THREAD_ID}")
+          fi
+          curl --fail --silent --show-error --retry 2 \
+            --request POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            "${args[@]}"

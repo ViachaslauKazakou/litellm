@@ -1,0 +1,84 @@
+name: learn-service
+
+services:
+
+  litellm-db-init:
+    image: postgres:15-alpine
+    container_name: learn_litellm_db_init_prod
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: "${POSTGRES_USER:-learn_user}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in LearnService .env.prod}"
+      PGDATABASE: postgres
+    networks: [prod_network]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        until pg_isready -h "$$PGHOST" -p "$$PGPORT" -U "$$PGUSER" -d "$$PGDATABASE"; do
+          echo "Waiting for the existing LearnService PostgreSQL..."
+          sleep 5
+        done
+        psql -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+        SELECT 'CREATE DATABASE litellm'
+        WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'litellm')
+        \\gexec
+        SQL
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "1"
+
+  litellm:
+    image: ghcr.io/berriai/litellm-database:v1.92.0
+    container_name: learn_litellm_prod
+    depends_on:
+      litellm-db-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-learn_user}:${POSTGRES_PASSWORD:-change-me-strong-password}@postgres:5432/litellm"
+      SERVER_ROOT_PATH: "/litellm"
+      LITELLM_PUBLIC_URL: "https://learnservice.online/litellm"
+      PROXY_BASE_URL: "https://learnservice.online/litellm"
+    env_file:
+      - .env.prod
+    networks:
+      - prod_network
+    volumes:
+      - /opt/learn-service/litellm-config-prod.yaml:/app/config.yaml:ro
+    expose:
+      - "4000"
+    healthcheck:
+      test: [
+        "CMD",
+        "python",
+        "-c",
+        "import sys, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:4000/health/liveness', timeout=5); sys.exit(0 if 200 <= r.status < 400 else 1)"
+      ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1.4G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '1'
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "2"
+
+
+networks:
+  prod_network:
+    name: learn_service_prod_network
+    external: true

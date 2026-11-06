@@ -1,0 +1,69 @@
+name: Deploy LiteLLM to VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - litellm-config-prod.yaml
+      - docker-compose.litellm-prod.yml
+      - scripts/deploy_litellm.sh
+      - vps_conf/**
+      - Makefile
+      - .github/workflows/vps-deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: litellm-vps-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy production config
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_SSH_USER: ${{ secrets.VPS_SSH_USER }}
+      VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+      VPS_REMOTE_DIR: ${{ secrets.VPS_REMOTE_DIR }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate deployment secrets
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$VPS_HOST" ]] || { echo "::error::Missing VPS_HOST secret"; exit 1; }
+          [[ -n "$VPS_SSH_PRIVATE_KEY" ]] || { echo "::error::Missing VPS_SSH_PRIVATE_KEY secret"; exit 1; }
+          [[ "$VPS_SSH_PORT" =~ ^[0-9]{1,5}$ || -z "$VPS_SSH_PORT" ]] || { echo "::error::VPS_SSH_PORT must be between 1 and 65535"; exit 1; }
+
+      - name: Install SSH key
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key_file="${RUNNER_TEMP}/litellm_deploy_key"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$key_file"
+          printf 'DEPLOY_SSH_KEY_FILE=%s\n' "$key_file" >> "$GITHUB_ENV"
+
+      - name: Deploy LiteLLM config
+        run: |
+          set -euo pipefail
+          bash scripts/deploy_litellm.sh \
+            --host "$VPS_HOST" \
+            --user "${VPS_SSH_USER:-root}" \
+            --port "${VPS_SSH_PORT:-22}" \
+            --ssh-key "$DEPLOY_SSH_KEY_FILE" \
+            --remote-dir "${VPS_REMOTE_DIR:-/opt/learn-service}"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/litellm_deploy_key"
