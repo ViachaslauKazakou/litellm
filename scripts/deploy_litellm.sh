@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upload the production LiteLLM config and recreate only the LiteLLM service.
+# Upload the production LiteLLM config/Compose file and recreate only LiteLLM.
 #
 # Local usage:
 #   bash scripts/deploy_litellm.sh [options]
@@ -12,6 +12,7 @@
 #   --ssh-key <path>       SSH identity file (optional)
 #   --remote-dir <path>    LearnService dir (default: /opt/learn-service)
 #   --config <path>        LiteLLM production config (default: repo config)
+#   --env-file <path>      Generated LiteLLM env (default: vps_conf/.env.litellm.prod)
 #   -h, --help             Show this help
 
 set -Eeuo pipefail
@@ -49,6 +50,7 @@ VPS_SSH_KEY="${VPS_SSH_KEY:-}"
 VPS_REMOTE_DIR="${VPS_REMOTE_DIR:-/opt/learn-service}"
 CONFIG_FILE="$ROOT_DIR/litellm-config-prod.yaml"
 COMPOSE_SOURCE="$ROOT_DIR/docker-compose.litellm-prod.yml"
+LITELLM_ENV_FILE="${LITELLM_ENV_FILE:-$ROOT_DIR/vps_conf/.env.litellm.prod}"
 
 usage() {
   sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -71,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --ssh-key)    require_value "$@"; VPS_SSH_KEY="$2"; shift 2 ;;
     --remote-dir) require_value "$@"; VPS_REMOTE_DIR="$2"; shift 2 ;;
     --config)     require_value "$@"; CONFIG_FILE="$2"; shift 2 ;;
+    --env-file)   require_value "$@"; LITELLM_ENV_FILE="$2"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) printf '[error] unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -84,8 +87,20 @@ if [[ ! -r "$CONFIG_FILE" ]]; then
   printf '[error] production config is not readable: %s\n' "$CONFIG_FILE" >&2
   exit 1
 fi
+if ! ruby -ryaml -e '
+  config = YAML.safe_load(File.read(ARGV.fetch(0)), permitted_classes: [], permitted_symbols: [], aliases: false)
+  abort unless config.is_a?(Hash) && config["model_list"].is_a?(Array) && !config["model_list"].empty?
+' "$CONFIG_FILE" >/dev/null 2>&1; then
+  printf '[error] production LiteLLM config is invalid YAML or has no model_list.\n' >&2
+  exit 1
+fi
 if [[ ! -r "$COMPOSE_SOURCE" ]]; then
   printf '[error] production Compose file is not readable: %s\n' "$COMPOSE_SOURCE" >&2
+  exit 1
+fi
+if [[ ! -r "$LITELLM_ENV_FILE" ]]; then
+  printf '[error] generated LiteLLM env file is not readable: %s\n' "$LITELLM_ENV_FILE" >&2
+  printf '[error] generate it from LITELLM_CONFIG.yml or pass --env-file.\n' >&2
   exit 1
 fi
 if [[ ! "$VPS_SSH_PORT" =~ ^[0-9]{1,5}$ ]]; then
@@ -129,6 +144,7 @@ SSH_TARGET="${VPS_USER}@${VPS_HOST}"
 RELEASE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 UPLOAD_NAME="litellm-config-prod-${RELEASE_ID}.yaml"
 COMPOSE_UPLOAD_NAME="docker-compose.litellm-prod-${RELEASE_ID}.yml"
+ENV_UPLOAD_NAME="litellm-env-${RELEASE_ID}.env"
 
 printf '[deploy] target: %s:%s\n' "$SSH_TARGET" "$VPS_SSH_PORT"
 printf '[deploy] remote dir: %s\n' "$VPS_REMOTE_DIR"
@@ -136,26 +152,32 @@ printf '[deploy] remote dir: %s\n' "$VPS_REMOTE_DIR"
 ssh "${SSH_OPTS[@]}" "$SSH_TARGET" true
 scp "${SCP_OPTS[@]}" "$CONFIG_FILE" "${SSH_TARGET}:/tmp/${UPLOAD_NAME}"
 scp "${SCP_OPTS[@]}" "$COMPOSE_SOURCE" "${SSH_TARGET}:/tmp/${COMPOSE_UPLOAD_NAME}"
+scp "${SCP_OPTS[@]}" "$LITELLM_ENV_FILE" "${SSH_TARGET}:/tmp/${ENV_UPLOAD_NAME}"
 
 REMOTE_DIR_Q="$(printf '%q' "$VPS_REMOTE_DIR")"
 UPLOAD_NAME_Q="$(printf '%q' "$UPLOAD_NAME")"
 COMPOSE_UPLOAD_NAME_Q="$(printf '%q' "$COMPOSE_UPLOAD_NAME")"
+ENV_UPLOAD_NAME_Q="$(printf '%q' "$ENV_UPLOAD_NAME")"
 ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
-  "REMOTE_DIR=${REMOTE_DIR_Q} UPLOAD_NAME=${UPLOAD_NAME_Q} COMPOSE_UPLOAD_NAME=${COMPOSE_UPLOAD_NAME_Q} bash -s" <<'REMOTE_SCRIPT'
+  "REMOTE_DIR=${REMOTE_DIR_Q} UPLOAD_NAME=${UPLOAD_NAME_Q} COMPOSE_UPLOAD_NAME=${COMPOSE_UPLOAD_NAME_Q} ENV_UPLOAD_NAME=${ENV_UPLOAD_NAME_Q} bash -s" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
 COMPOSE_FILE="${REMOTE_DIR}/docker-compose.litellm-prod.yml"
-ENV_FILE="${REMOTE_DIR}/.env.prod"
+ENV_FILE="${REMOTE_DIR}/.env.litellm.prod"
 CONFIG_FILE="${REMOTE_DIR}/litellm-config-prod.yaml"
 UPLOAD_FILE="/tmp/${UPLOAD_NAME}"
 COMPOSE_UPLOAD_FILE="/tmp/${COMPOSE_UPLOAD_NAME}"
+ENV_UPLOAD_FILE="/tmp/${ENV_UPLOAD_NAME}"
 CONFIG_STAGE="${REMOTE_DIR}/.litellm-config-prod.${UPLOAD_NAME}.new"
 CONFIG_BACKUP="${REMOTE_DIR}/.litellm-config-prod.${UPLOAD_NAME}.backup"
 COMPOSE_STAGE="${REMOTE_DIR}/.docker-compose.litellm-prod.${COMPOSE_UPLOAD_NAME}.new"
 COMPOSE_BACKUP="${REMOTE_DIR}/.docker-compose.litellm-prod.${COMPOSE_UPLOAD_NAME}.backup"
+ENV_STAGE="${REMOTE_DIR}/.env.litellm.prod.${ENV_UPLOAD_NAME}.new"
+ENV_BACKUP="${REMOTE_DIR}/.env.litellm.prod.${ENV_UPLOAD_NAME}.backup"
 ROLLBACK_NEEDED=false
 HAD_CONFIG=false
 HAD_COMPOSE=false
+HAD_ENV=false
 
 compose() {
   cd "$REMOTE_DIR"
@@ -180,11 +202,23 @@ finish() {
     else
       sudo rm -f "$COMPOSE_FILE" || true
     fi
-    compose up -d --no-deps --force-recreate litellm || true
-    compose logs --tail 80 litellm || true
+    if [[ "$HAD_ENV" == true ]]; then
+      sudo install -m 0600 "$ENV_BACKUP" "$ENV_FILE" || true
+    else
+      sudo rm -f "$ENV_FILE" || true
+    fi
+    if [[ "$HAD_CONFIG" == true && "$HAD_COMPOSE" == true && "$HAD_ENV" == true ]]; then
+      compose up -d --no-deps --force-recreate litellm || true
+      compose logs --tail 80 litellm || true
+    else
+      # A first-deploy failure has nothing safe to roll back to. Remove only
+      # the failed proxy container; never stop the shared PostgreSQL container.
+      sudo docker rm -f learn_litellm_prod || true
+    fi
   fi
-  sudo rm -f "$UPLOAD_FILE" "$COMPOSE_UPLOAD_FILE" \
-    "$CONFIG_STAGE" "$CONFIG_BACKUP" "$COMPOSE_STAGE" "$COMPOSE_BACKUP" || true
+  sudo rm -f "$UPLOAD_FILE" "$COMPOSE_UPLOAD_FILE" "$ENV_UPLOAD_FILE" \
+    "$CONFIG_STAGE" "$CONFIG_BACKUP" "$COMPOSE_STAGE" "$COMPOSE_BACKUP" \
+    "$ENV_STAGE" "$ENV_BACKUP" || true
   exit "$exit_code"
 }
 trap finish EXIT
@@ -193,16 +227,16 @@ if [[ ! -d "$REMOTE_DIR" || "$REMOTE_DIR" == / || "$REMOTE_DIR" == /opt ]]; then
   echo "[error] unsafe or missing deployment directory: $REMOTE_DIR" >&2
   exit 1
 fi
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "[error] expected LearnService production .env.prod in $REMOTE_DIR" >&2
-  exit 1
-fi
 if [[ ! -s "$UPLOAD_FILE" ]]; then
   echo "[error] uploaded production config is missing or empty" >&2
   exit 1
 fi
 if [[ ! -s "$COMPOSE_UPLOAD_FILE" ]]; then
   echo "[error] uploaded LiteLLM Compose file is missing or empty" >&2
+  exit 1
+fi
+if [[ ! -s "$ENV_UPLOAD_FILE" ]]; then
+  echo "[error] uploaded LiteLLM env file is missing or empty" >&2
   exit 1
 fi
 
@@ -214,12 +248,18 @@ if sudo test -f "$COMPOSE_FILE"; then
   HAD_COMPOSE=true
   sudo cp -p "$COMPOSE_FILE" "$COMPOSE_BACKUP"
 fi
+if sudo test -f "$ENV_FILE"; then
+  HAD_ENV=true
+  sudo cp -p "$ENV_FILE" "$ENV_BACKUP"
+fi
 
 ROLLBACK_NEEDED=true
 sudo install -m 0644 "$UPLOAD_FILE" "$CONFIG_STAGE"
 sudo mv -f "$CONFIG_STAGE" "$CONFIG_FILE"
 sudo install -m 0644 "$COMPOSE_UPLOAD_FILE" "$COMPOSE_STAGE"
 sudo mv -f "$COMPOSE_STAGE" "$COMPOSE_FILE"
+sudo install -m 0600 "$ENV_UPLOAD_FILE" "$ENV_STAGE"
+sudo mv -f "$ENV_STAGE" "$ENV_FILE"
 
 echo "[remote] validating Compose and starting only LiteLLM..."
 compose config >/dev/null

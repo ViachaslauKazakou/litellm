@@ -2,7 +2,8 @@
 
 Репозиторий содержит конфигурации LiteLLM для разработки и production. Production
 LiteLLM работает как сервис существующего LearnService на VPS. Деплой из этого
-репозитория загружает `litellm-config-prod.yaml` и отдельный
+репозитория берёт значения из GitHub Secret `LITELLM_CONFIG`, формирует отдельный
+LiteLLM env-файл, загружает его вместе с `litellm-config-prod.yaml` и
 `docker-compose.litellm-prod.yml`, затем пересоздаёт только сервис `litellm`; он
 не разворачивает LearnService целиком и не перезапускает его PostgreSQL, Redis,
 приложение или worker.
@@ -22,25 +23,25 @@ LiteLLM работает как сервис существующего LearnSer
 
 На VPS уже должна работать production-инфраструктура LearnService. Деплой LiteLLM:
 
-1. Передаёт на сервер production-конфиг и LiteLLM Compose-файл.
-2. Сохраняет текущие файлы во временные резервные копии и атомарно устанавливает
-   новые.
+1. Разбирает GitHub Secret `LITELLM_CONFIG` и формирует приватный env-файл только
+   с LiteLLM/provider/Postgres-переменными. `VPS_HOST` и `SSH_USER` берутся из
+   того же YAML.
+2. Передаёт на сервер production-конфиг, LiteLLM Compose-файл и env-файл;
+   сохраняет предыдущие файлы и атомарно устанавливает новые.
 3. Проверяет Compose-конфигурацию и выполняет
    `docker compose up -d --force-recreate litellm`.
 4. Ждёт, пока healthcheck контейнера LiteLLM не перейдёт в состояние `healthy`.
-5. Если обновление завершается ошибкой, восстанавливает предыдущий конфиг и
-   Compose-файл, затем пересоздаёт LiteLLM с прежней конфигурацией.
+5. Если обновление завершается ошибкой, восстанавливает предыдущие конфиг,
+   Compose и env-файл, затем пересоздаёт LiteLLM с прежней конфигурацией.
 
-Docker image и runtime-секреты этим workflow не собираются и не загружаются.
-Сервис читает provider keys и `LITELLM_MASTER_KEY` из `.env.prod` LearnService на
-VPS.
+Workflow не передаёт LearnService `.env.prod` и не перезаписывает его. Отдельный
+сгенерированный файл хранится на VPS как
+`/opt/learn-service/.env.litellm.prod` с правами `0600`.
 
 Для деплоя необходимы на сервере:
 
 - Docker и Docker Compose;
 - каталог LearnService, обычно `/opt/learn-service`;
-- production `.env.prod` LearnService с необходимыми LiteLLM и PostgreSQL
-  переменными;
 - запущенный LearnService PostgreSQL (`learn_postgres_prod`) в общей сети
   `learn_service_prod_network`;
 - SSH-доступ и возможность выполнять `sudo docker compose` без запроса пароля.
@@ -56,9 +57,15 @@ VPS.
 | Файл | Где находится | Для чего нужен | Секреты |
 | --- | --- | --- | --- |
 | `.env.litellm.dev` | Локально, корень этого репозитория | Настройки LiteLLM для разработки: подключение к локальной/общей PostgreSQL, локальные master/salt keys и параметры сети. Создаётся автоматически при первом `make litellm-dev-up`. | Не коммитить; уже исключён из Git. |
-| `vps_conf/deploy.env` | Локально, в этом репозитории | Адрес VPS, SSH-пользователь/порт, путь LearnService и путь к локальному SSH-ключу для `make deploy-prod`. | Игнорируется Git; приватный ключ храните отдельно в `~/.ssh`. |
-| `.env.prod` | На VPS в каталоге LearnService, обычно `/opt/learn-service/.env.prod` | Runtime-переменные LearnService и LiteLLM: общий Postgres login, LiteLLM master key и ключи AI-провайдеров. Production Compose LiteLLM читает этот файл непосредственно на VPS. | Не копировать в LiteLLM-репозиторий и не передавать в GitHub Actions. Ограничить права на VPS (`0600`). |
-| `.env.prod` в корне этого репозитория | Локально, если такой файл есть | **Не используется** командами деплоя из этого README. Не путайте его с production-файлом LearnService на VPS. | Не коммитить. |
+| `LITELLM_CONFIG.yml` | Локально, корень репозитория | Полный YAML с VPS-параметрами и env-секретами; источник для локальной генерации и содержимое GitHub Secret `LITELLM_CONFIG`. | Игнорируется Git. Не коммитить и ротировать, если значения раскрыты. |
+| `LITELLM_CONFIG` | GitHub → Secrets and variables → Actions | Полное содержимое локального `LITELLM_CONFIG.yml`; workflow извлекает `VPS_HOST`/`SSH_USER` и разрешённые runtime-ключи LiteLLM. | GitHub Secret. Остальные app/SMTP/Google значения не передаются LiteLLM-контейнеру. |
+| `vps_conf/deploy.env` | Локально, в этом репозитории | SSH-ключ/порт/remote-dir для локального `make deploy-prod`; VPS host/user можно взять из этого файла для ручного запуска. | Игнорируется Git; приватный ключ храните отдельно в `~/.ssh`. |
+| `vps_conf/.env.litellm.prod` | Локально, генерируется из `LITELLM_CONFIG.yml` | Временный runtime-файл для локального SSH-деплоя; содержит только LiteLLM/provider/Postgres переменные. | Игнорируется Git, права `0600`. |
+| `/opt/learn-service/.env.litellm.prod` | На VPS | Runtime env LiteLLM, доставленный workflow; Compose загружает его только сервисам LiteLLM/bootstrap. | Права `0600`; обновляется при успешном деплое с GitHub Secret. |
+| `/opt/learn-service/.env.prod` | На VPS, LearnService | Env основного приложения; LiteLLM deploy его не читает и не изменяет. | Остаётся под управлением LearnService. |
+
+Генератор строит `LITELLM_DATABASE_URL` из `POSTGRES_USER`/`POSTGRES_PASSWORD`
+и percent-encode credentials перед подключением к `postgres:5432/litellm`.
 
 В production-конфиге (`litellm-config-prod.yaml`) используются переменные:
 
@@ -68,13 +75,9 @@ VPS.
 - `DEEPSEEK_API_KEY`
 - `DASHSCOPE_API_KEY` — используется моделью `qwen3.7-flash`
 
-Все переменные, нужные включённым моделям, должны быть доступны контейнеру
-LiteLLM из LearnService `.env.prod`. В текущем шаблоне LearnService нет
-`DASHSCOPE_API_KEY`: если используется `qwen3.7-flash`, добавьте эту переменную в
-настройки/секреты именно LearnService и обновите его серверный `.env.prod`.
-Если провайдер не используется, удалите соответствующую модель из production
-конфига. Не помещайте значения provider keys в YAML-конфиг, Git, GitHub workflow
-или `vps_conf/deploy.env`.
+Все значения для этих переменных берутся из `LITELLM_CONFIG.yml` и передаются
+через GitHub Secret `LITELLM_CONFIG`. Не записывайте provider keys в
+`litellm-config-prod.yaml`, Git или workflow YAML.
 
 Локальная конфигурация и инструкции по разработке описаны также в
 [`LITELLM_LOCAL_DEV.md`](LITELLM_LOCAL_DEV.md). Детали VPS-скрипта и его
@@ -105,18 +108,17 @@ deploy-пользователя с доступом к Docker через `sudo`;
 
 ### 2. Проверить LearnService на сервере
 
-Убедитесь, что deployment-каталог, production env, общая сеть и основной Postgres
-на месте (LiteLLM Compose-файл установит сам deploy workflow):
+Убедитесь, что deployment-каталог, общая сеть и основной Postgres на месте
+(Compose и LiteLLM env-файл установит deploy workflow):
 
 ```sh
 ssh root@<VPS_HOST> \
-  'test -f /opt/learn-service/.env.prod && \
-   sudo docker network inspect learn_service_prod_network >/dev/null && \
+  'sudo docker network inspect learn_service_prod_network >/dev/null && \
    sudo docker inspect learn_postgres_prod --format "{{.State.Status}}"'
 ```
 
-Проверьте, что `.env.prod` LearnService содержит все runtime-переменные для
-моделей, включённых в `litellm-config-prod.yaml`.
+Production env для LiteLLM создаётся из GitHub Secret `LITELLM_CONFIG` при каждом
+деплое; вручную создавать `/opt/learn-service/.env.litellm.prod` не нужно.
 
 ## Вариант 1 — деплой через GitHub Actions
 
@@ -130,9 +132,8 @@ ssh root@<VPS_HOST> \
 
 | Secret | Обязателен | Что положить |
 | --- | --- | --- |
-| `VPS_HOST` | Да | IP-адрес или hostname VPS. |
+| `LITELLM_CONFIG` | Да | Полное содержимое локального `LITELLM_CONFIG.yml` (YAML со значениями). Из него workflow читает `VPS_HOST`/`SSH_USER` и генерирует LiteLLM env. |
 | `VPS_SSH_PRIVATE_KEY` | Да | Полный текст приватного SSH-ключа, включая строки `BEGIN OPENSSH PRIVATE KEY` и `END OPENSSH PRIVATE KEY`. Добавляйте файл без суффикса `.pub`. |
-| `VPS_SSH_USER` | Нет | SSH-пользователь; если не задан, используется `root`. |
 | `VPS_SSH_PORT` | Нет | SSH-порт; если не задан, используется `22`. |
 | `VPS_REMOTE_DIR` | Нет | Корень LearnService на сервере; если не задан, используется `/opt/learn-service`. |
 
@@ -142,19 +143,13 @@ ssh root@<VPS_HOST> \
 cat ~/.ssh/litellm_deploy_key
 ```
 
-Добавляйте сюда только параметры SSH-доступа к VPS. Значения API-ключей,
-`LITELLM_MASTER_KEY`, `POSTGRES_PASSWORD` и содержимое LearnService `.env.prod` в
-GitHub Actions **не добавляйте**: workflow их не читает и не загружает. Compose
-на VPS использует существующий `/opt/learn-service/.env.prod`; LiteLLM получает
-из него runtime-переменные, а одноразовый `litellm-db-init` подключается к уже
-работающему LearnService PostgreSQL и создаёт в нём только отдельную БД `litellm`.
-
-Если SSH secrets уже заведены как repository secrets в репозитории LearnService,
-GitHub не предоставляет их другому репозиторию автоматически. Можно либо создать
-такие же значения в Secrets этого репозитория, либо (если репозитории в одной
-организации) использовать organization secrets с доступом только к обоим нужным
-репозиториям. Общий YAML `VPS_SECRETS` не нужен: этот workflow ждёт отдельные
-`VPS_HOST` и `VPS_SSH_PRIVATE_KEY`, а секреты приложения остаются на VPS.
+Содержимое `LITELLM_CONFIG.yml` храните именно в GitHub Secret `LITELLM_CONFIG`, а
+не в переменных workflow или git. `VPS_HOST` и `SSH_USER` читаются из него;
+`VPS_SSH_PRIVATE_KEY` остаётся отдельным секретом. Workflow формирует env-файл
+только из `LITELLM_MASTER_KEY`, provider keys, `POSTGRES_USER`/`POSTGRES_PASSWORD`
+и необязательных LiteLLM UI/salt-настроек. Остальные app/SMTP/Google значения из
+YAML не попадают в контейнер. LearnService `.env.prod` не читается и не
+перезаписывается.
 
 ### Шаг 2. (Необязательно) Настроить Telegram
 
@@ -187,7 +182,8 @@ Workflow называется **Deploy LiteLLM to VPS**.
 ### Шаг 4. Проверить результат
 
 Откройте запуск workflow в **Actions**. Успешный запуск означает, что скрипт
-подключился к VPS, обновил конфиг и дождался статуса Docker healthcheck `healthy`.
+подключился к VPS, обновил production-конфиг, Compose и выделенный runtime env
+LiteLLM и дождался статуса Docker healthcheck `healthy`.
 При наличии Telegram secrets придёт отдельное сообщение о результате.
 
 ## Вариант 2 — деплой из консоли через Makefile
@@ -195,50 +191,65 @@ Workflow называется **Deploy LiteLLM to VPS**.
 Локально нужны `make`, `bash`, `ssh` и `scp` (на macOS/Linux обычно уже доступны).
 Docker на рабочей машине для production-деплоя не нужен.
 
-### Шаг 1. Создать локальный deploy env
+### Шаг 1. Проверить локальный YAML и SSH-доступ
 
-Из корня репозитория выполните:
+Команда `make vps-deploy` берёт `VPS_HOST`, `SSH_USER` и runtime-секреты из
+игнорируемого `LITELLM_CONFIG.yml`; создавать `vps_conf/deploy.env` для неё не
+нужно. Убедитесь, что локальный YAML заполнен реальными значениями, а SSH-ключ
+доступен. Для подключения можно передать параметры прямо команде, например:
 
 ```sh
-cp vps_conf/deploy.env.example vps_conf/deploy.env
-chmod 600 vps_conf/deploy.env
+make vps-deploy VPS_PORT=22 VPS_SSH_KEY=~/.ssh/litellm_deploy_key
 ```
 
-Откройте `vps_conf/deploy.env` и заполните параметры:
+Если `VPS_SSH_KEY` не указан или ключ по умолчанию отсутствует, deploy script
+проверяет `~/.ssh/id_ed25519`, затем `~/.ssh/id_rsa`; также можно использовать
+уже загруженный в `ssh-agent` ключ.
 
-```dotenv
-VPS_HOST=your-vps-host-or-ip
-VPS_USER=root
-VPS_SSH_PORT=22
-VPS_REMOTE_DIR=/opt/learn-service
-VPS_SSH_KEY=~/.ssh/litellm_deploy_key
+`vps_conf/deploy.env` нужен только для низкоуровневого `make deploy-prod` или
+прямого вызова `scripts/deploy_litellm.sh`; параметры, явно переданные Make,
+имеют приоритет над ним. Не храните там provider keys, `LITELLM_MASTER_KEY`,
+`POSTGRES_PASSWORD` или другие runtime-секреты.
+
+Создайте отдельный локальный env-файл LiteLLM из того же YAML (для GitHub Actions
+это выполняется автоматически из секрета `LITELLM_CONFIG`). Для локального
+деплоя команда `make vps-deploy` создаёт его сама; отдельная команда нужна, если
+вы хотите проверить или подготовить env заранее:
+
+```sh
+ruby scripts/generate_litellm_env.rb \
+  --input LITELLM_CONFIG.yml \
+  --output vps_conf/.env.litellm.prod
+chmod 600 vps_conf/.env.litellm.prod
 ```
 
-`VPS_SSH_KEY` необязателен: без него скрипт проверяет `~/.ssh/id_ed25519`, затем
-`~/.ssh/id_rsa`. Если SSH-ключ уже доступен через `ssh-agent`, можно не задавать
-`VPS_SSH_KEY`.
+Генератор не печатает секреты и включает только нужные LiteLLM/provider/Postgres
+переменные. Env-файл игнорируется Git; deploy script загружает его на VPS как
+`/opt/learn-service/.env.litellm.prod`.
 
-В `deploy.env` должны быть только параметры подключения. Не добавляйте туда
-`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`,
-`LITELLM_MASTER_KEY` или другие runtime-секреты.
-
-Файл `vps_conf/deploy.env` исключён из Git. После настройки убедитесь, что он не
-попадает в изменения:
+Секретные файлы исключены из Git. Проверьте это перед деплоем:
 
 ```sh
 git check-ignore -v vps_conf/deploy.env
+git check-ignore -v LITELLM_CONFIG.yml
+git check-ignore -v vps_conf/.env.litellm.prod
 ```
 
 ### Шаг 2. Запустить деплой
 
-Из корня репозитория:
+Из корня репозитория запустите локальный production-деплой:
 
 ```sh
-make deploy-prod
+make vps-deploy
 ```
 
-Скрипт проверит параметры, SSH-доступ и наличие локальных production-файлов,
-загрузит конфиг и Compose, пересоздаст только `litellm` и проверит healthcheck.
+Команда читает `VPS_HOST` и `SSH_USER` из игнорируемого `LITELLM_CONFIG.yml`,
+генерирует отдельный env-файл с правами `0600`, затем загружает файлы на VPS,
+пересоздаёт только `litellm` и проверяет healthcheck. Для SSH-порта, ключа и
+каталога можно переопределить `VPS_PORT`, `VPS_SSH_KEY` и `VPS_REMOTE_DIR`.
+
+Если env-файл уже подготовлен вручную, можно использовать низкоуровневую команду
+`make deploy-prod`; она не генерирует env автоматически.
 
 Также можно переопределить настройки разовым вызовом, не меняя `deploy.env`:
 
@@ -265,8 +276,9 @@ bash scripts/deploy_litellm.sh \
 
 ### Подключиться к VPS и посмотреть логи LiteLLM
 
-Те же значения из `vps_conf/deploy.env` используются командами для обслуживания
-сервера:
+Команды обслуживания используют Make-переменные (`VPS_HOST`, `VPS_USER`,
+`VPS_PORT`, `VPS_SSH_KEY`). По умолчанию host/user соответствуют production
+настройкам; `vps_conf/deploy.env` эти Make-цели не читают:
 
 ```sh
 make vps-ssh             # открыть интерактивную SSH-сессию
@@ -278,14 +290,14 @@ make vps-logs-litellm    # следить за production-логами LiteLLM
 Для разового подключения к другому серверу можно переопределить параметры:
 
 ```sh
-make vps-ssh VPS_HOST=203.0.113.10 VPS_USER=deploy VPS_SSH_KEY=~/.ssh/litellm_deploy_key
-make vps-logs VPS_HOST=203.0.113.10 VPS_USER=deploy VPS_SSH_KEY=~/.ssh/litellm_deploy_key
+make vps-ssh VPS_HOST=203.0.113.10 VPS_USER=deploy VPS_PORT=2222 VPS_SSH_KEY=~/.ssh/litellm_deploy_key
+make vps-logs VPS_HOST=203.0.113.10 VPS_USER=deploy VPS_PORT=2222 VPS_SSH_KEY=~/.ssh/litellm_deploy_key
 ```
 
 Для обеих команд нужен тот же SSH-доступ, который описан в разделе
 [первичной настройки VPS](#первичная-настройка-vps). Команда просмотра логов
-использует отдельный `docker-compose.litellm-prod.yml` и общий LearnService
-`.env.prod` на VPS.
+использует отдельный `docker-compose.litellm-prod.yml` и
+`.env.litellm.prod` на VPS.
 
 ## Рабочий цикл изменения и деплоя
 
@@ -295,9 +307,9 @@ make vps-logs VPS_HOST=203.0.113.10 VPS_USER=deploy VPS_SSH_KEY=~/.ssh/litellm_d
    - Локальная разработка: `litellm-config.yaml`.
    - Production: `litellm-config-prod.yaml`.
 2. **Проверьте runtime-переменные.** Если новая модель требует API key, сначала
-   настройте его в LearnService `.env.prod` на VPS. Не записывайте значение ключа
-   в конфиг. В production-конфиге используйте ссылки вида
-   `os.environ/OPENAI_API_KEY`.
+   добавьте его в локальный `LITELLM_CONFIG.yml` и обновите GitHub Secret
+   `LITELLM_CONFIG`. Значения не пишите в model config или Git; в
+   `litellm-config-prod.yaml` используйте ссылки `os.environ/KEY_NAME`.
 3. **Проверьте diff и YAML до деплоя.** Например, если Ruby установлен:
 
    ```sh
@@ -349,13 +361,13 @@ ssh root@<VPS_HOST> \
   'cd /opt/learn-service && sudo docker compose \
     --project-name learn-service \
     --file docker-compose.litellm-prod.yml \
-    --env-file .env.prod ps litellm'
+    --env-file .env.litellm.prod ps litellm'
 ```
 
 Если healthcheck не прошёл, проверьте:
 
-1. Все ли env-переменные, на которые ссылается конфиг, присутствуют в LearnService
-   `.env.prod`.
+1. Все ли необходимые ключи присутствуют в GitHub Secret `LITELLM_CONFIG` и
+   установлены ли права `0600` на `/opt/learn-service/.env.litellm.prod`.
 2. Есть ли у LiteLLM доступ к PostgreSQL и к нужной Docker-сети.
 3. Логи контейнера (`docker logs`) и результат Actions/job.
 4. Не был ли недавно обновлён LiteLLM-конфиг параллельным деплоем LearnService.

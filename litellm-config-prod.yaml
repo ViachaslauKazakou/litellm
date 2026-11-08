@@ -38,8 +38,8 @@ model_list:
     litellm_params:
       model: ollama/qwen3.5:2b-q4_K_M
       api_base: http://ollama:11434
-      input_cost_per_token: 5.0e-06
-      output_cost_per_token: 1.5e-05
+      input_cost_per_token: 5.0e-07
+      output_cost_per_token: 1.5e-06
       # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
       num_ctx: 4096
       # keep_alive: -1
@@ -49,6 +49,20 @@ model_list:
     model_info:
       supports_function_calling: true
 
+  - model_name: qwen3.5:4b-q4_K_M
+    litellm_params:
+      model: ollama/qwen3.5:4b-q4_K_M
+      api_base: http://ollama:11434
+      input_cost_per_token: 5.0e-07
+      output_cost_per_token: 1.5e-06
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

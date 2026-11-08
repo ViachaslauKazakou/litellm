@@ -60,8 +60,10 @@ VPS_REMOTE_DIR=/opt/learn-service \
 
 if ! grep -Fq 'tester@mock.invalid' "$MOCK_SSH_LOG" \
   || ! grep -Fq 'logs --follow litellm' "$MOCK_SSH_SCRIPT" \
-  || ! grep -Fq -- '--env-file "$REMOTE_DIR/.env.prod"' "$MOCK_SSH_SCRIPT"; then
+  || ! grep -Fq 'docker-compose.litellm-prod.yml' "$MOCK_SSH_SCRIPT" \
+  || grep -Fq 'docker-compose.vps.prod.yml' "$MOCK_SSH_SCRIPT" \
+  || ! grep -Fq -- '--env-file "$REMOTE_DIR/.env.litellm.prod"' "$MOCK_SSH_SCRIPT"; then
   printf 'FAIL: remote log command does not target the LearnService LiteLLM service.\n' >&2
   exit 1
 fi
-printf 'PASS: log command follows LiteLLM using LearnService production Compose/env.\n'
+printf 'PASS: log command follows LiteLLM using dedicated Compose/runtime env.\n'

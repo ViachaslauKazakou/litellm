@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help litellm-dev-up litellm-dev-down litellm-dev-logs litellm-dev-status litellm-dev-restart litellm-dev-import-env litellm-dev-sync-app-key deploy-prod vps-ssh vps-logs vps-logs-litellm
+.PHONY: help litellm-dev-up litellm-dev-down litellm-dev-logs litellm-dev-status litellm-dev-restart litellm-dev-import-env litellm-dev-sync-app-key deploy-prod generate_litellm_env vps-deploy vps-ssh vps-logs vps-logs-litellm
 
 LEARN_SERVICE_DIR ?= $(HOME)/Work/learn-service
 
@@ -12,7 +12,9 @@ help: ## Показать команды локального LiteLLM
 	@printf '  make litellm-dev-import-env  Перенести provider keys из старого litellm_dev\n'
 	@printf '  make litellm-dev-sync-app-key  Синхронизировать master key с LearnService\n'
 	@printf '  make litellm-dev-down    Остановить LiteLLM, не трогая PostgreSQL\n'
-	@printf '  make deploy-prod         Развернуть production-конфиг LiteLLM на VPS\n'
+	@printf '  make vps-deploy          Сгенерировать env и развернуть LiteLLM на VPS\n'
+	@printf '  make generate_litellm_env Сгенерировать отдельный LiteLLM env из YAML\n'
+	@printf '  make deploy-prod         Развернуть LiteLLM с уже созданным env-файлом\n'
 	@printf '  make vps-ssh             Подключиться к VPS по SSH\n'
 	@printf '  make vps-logs-litellm    Смотреть production-логи LiteLLM на VPS\n'
 
@@ -63,7 +65,7 @@ VPS_ENV_TEMPLATE  ?= $(VPS_DIR)/.env.prod.example
 VPS_SECRETS_FILE  ?= $(VPS_DIR)/VPS_SECRETS.yml
 
 # Обязательный параметр: IP или hostname сервера
-VPS_HOST          ?= 159.253.22.116
+VPS_HOST          ?= 2.31.21.148
 # Опциональные
 VPS_USER          ?= root
 VPS_PORT          ?= 22
@@ -71,39 +73,40 @@ VPS_SSH_KEY       ?= $(HOME)/.ssh/id_ed25519
 VPS_DOMAIN        ?= learnservice.online
 VPS_LE_EMAIL      ?= admin@learnservice.online
 VPS_ENV_FILE      ?= $(VPS_DIR)/.env.prod
+LITELLM_CONFIG_FILE ?= LITELLM_CONFIG.yml
+LITELLM_ENV_FILE  ?= $(VPS_DIR)/.env.litellm.prod
 
 # Внутренний хелпер: проверить что VPS_HOST задан
 _vps-require-host:
 	@if [ -z "$(VPS_HOST)" ]; then \
-		echo "$(RED)❌ Укажите IP сервера: make <target> VPS_HOST=159.253.22.116$(NC)"; \
+		echo "$(RED)❌ Укажите IP сервера: make <target> VPS_HOST=2.31.21.148$(NC)"; \
 		exit 1; \
 	fi
 
 # Внутренний хелпер: строка SSH opts для прямых команд
 _VPS_SSH := ssh -p $(VPS_PORT) -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 $(if $(wildcard $(VPS_SSH_KEY)),-i $(VPS_SSH_KEY)) $(VPS_USER)@$(VPS_HOST)
 
-vps-deploy: _vps-require-host generate_env ## 🚀 VPS: деплой на сервер (build app+worker, reload nginx, skip shared)
-	@test -f $(VPS_ENV_FILE) || { echo "$(RED)❌ env файл не найден: $(VPS_ENV_FILE)$(NC)"; echo "запустите make generate_env"; exit 1; }
-	bash $(VPS_DEPLOY_SH) \
-		--host $(VPS_HOST) \
-		--user $(VPS_USER) \
-		--port $(VPS_PORT) \
-		$(if $(wildcard $(VPS_SSH_KEY)),--ssh-key $(VPS_SSH_KEY)) \
-		--env-file $(VPS_ENV_FILE) \
-		$(if $(VPS_DOMAIN),--domain $(VPS_DOMAIN)) \
-		$(if $(VPS_LE_EMAIL),--email $(VPS_LE_EMAIL))
+generate_litellm_env: ## Создать закрытый runtime env LiteLLM из LITELLM_CONFIG.yml
+	@ruby scripts/generate_litellm_env.rb --input "$(LITELLM_CONFIG_FILE)" --output "$(LITELLM_ENV_FILE)"
 
-vps-deploy-with-migrations: _vps-require-host generate_env ## 🚀 VPS: деплой + миграции БД
-	@test -f $(VPS_ENV_FILE) || { echo "$(RED)❌ env файл не найден: $(VPS_ENV_FILE)$(NC)"; echo "запустите make generate_env"; exit 1; }
-	bash $(VPS_DEPLOY_SH) \
-		--host $(VPS_HOST) \
-		--user $(VPS_USER) \
-		--port $(VPS_PORT) \
-		$(if $(wildcard $(VPS_SSH_KEY)),--ssh-key $(VPS_SSH_KEY)) \
-		--env-file $(VPS_ENV_FILE) \
-		$(if $(VPS_DOMAIN),--domain $(VPS_DOMAIN)) \
-		$(if $(VPS_LE_EMAIL),--email $(VPS_LE_EMAIL)) \
-		--run-migrations
+vps-deploy: ## 🚀 VPS: сгенерировать LiteLLM env и обновить только LiteLLM
+	@set -eu; \
+		target_file="$$(mktemp)"; \
+		trap 'rm -f "$$target_file"' EXIT; \
+		: > "$$target_file"; \
+		ruby scripts/generate_litellm_env.rb \
+			--input "$(LITELLM_CONFIG_FILE)" \
+			--output "$(LITELLM_ENV_FILE)" \
+			--github-output "$$target_file"; \
+		host="$$(awk -F= '$$1 == "vps_host" { print $$2; exit }' "$$target_file")"; \
+		user="$$(awk -F= '$$1 == "ssh_user" { print $$2; exit }' "$$target_file")"; \
+		bash scripts/deploy_litellm.sh \
+			--host "$$host" \
+			--user "$$user" \
+			--port "$(VPS_PORT)" \
+			$(if $(wildcard $(VPS_SSH_KEY)),--ssh-key "$(VPS_SSH_KEY)") \
+			--remote-dir "$(VPS_REMOTE_DIR)" \
+			--env-file "$(LITELLM_ENV_FILE)"
 
 vps-ssh: _vps-require-host ## 🔑 VPS: открыть SSH сессию к серверу
 	$(_VPS_SSH)
@@ -123,7 +126,7 @@ vps-logs-worker: _vps-require-host ## 📜 VPS: логи worker
 vps-logs-litellm: _vps-require-host ## 📜 VPS: логи litellm
 	$(_VPS_SSH) "sudo docker compose \
 	  -f $(VPS_REMOTE_DIR)/docker-compose.litellm-prod.yml \
-	  --env-file $(VPS_REMOTE_DIR)/.env.prod \
+	  --env-file $(VPS_REMOTE_DIR)/.env.litellm.prod \
 	  --project-name learn-service logs -f litellm"
 
 vps-ps: _vps-require-host ## 📋 VPS: состояние всех контейнеров на сервере

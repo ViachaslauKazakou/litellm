@@ -1,18 +1,19 @@
-# VPS_SECRETS — пример файла секретов для GitHub Actions
+# LITELLM_CONFIG — шаблон YAML-секрета для GitHub Actions
 #
-# Создай GitHub Secret с именем VPS_SECRETS и вставь в него содержимое
-# этого файла с реальными значениями (без комментариев и без кавычек вокруг строк).
+# Заполни значения локально и сохрани полный YAML как GitHub Secret
+# с именем LITELLM_CONFIG. Не коммить файл LITELLM_CONFIG.yml с реальными значениями.
 #
-# Формат: YAML, ключ: значение.
-# Значения со спецсимволами (: # @ / etc.) заключай в двойные кавычки.
+# Workflow читает из YAML VPS_HOST/SSH_USER и формирует отдельный env-файл для
+# LiteLLM. В контейнер передаются только LiteLLM/provider/Postgres переменные;
+# остальные app/SMTP/Google secrets в этот контейнер не копируются.
 #
-# КАК ДОБАВИТЬ СЕКРЕТ:
+# Добавить GitHub Secret:
 #   GitHub → Settings → Secrets and variables → Actions → New repository secret
-#   Name: VPS_SECRETS
-#   Value: содержимое этого файла (с реальными значениями)
+#   Name: LITELLM_CONFIG
+#   Value: полное содержимое этого файла с реальными значениями
 
 # ── Подключение к серверу ─────────────────────────────────────
-VPS_HOST: "159.253.22.116"
+VPS_HOST: "2.31.21.148"
 SSH_USER: "root"
 
 # ── Application ───────────────────────────────────────────────
@@ -30,7 +31,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES: 4320
 COOKIE_SECURE: true
 SERVICE_API_KEY: "replace-with-generated-service-token-minimum-32-characters"
 AI_SERVICE_API_KEY: "replace-with-generated-ai-service-token-minimum-32-characters"
-SECRET: "replace-with-generated-secret-minimum-32-characters"
 
 # ── Postgres ──────────────────────────────────────────────────
 POSTGRES_DB: learn_db
@@ -45,6 +45,9 @@ ARQ_REDIS_URL: "redis://redis:6379/0"
 
 # ── LiteLLM ───────────────────────────────────────────────────
 LITELLM_MASTER_KEY: "sk-change-me-strong-litellm-key"
+# Необязательно: задай один раз и храни постоянно, если LiteLLM шифрует
+# credentials, записанные через Admin UI.
+LITELLM_SALT_KEY: "sk-change-me-strong-litellm-salt"
 UI_USERNAME: learn-admin
 UI_PASSWORD: "change-me-strong-ui-password"
 STORE_MODEL_IN_DB: "True"
@@ -77,6 +80,3 @@ TELEGRAM_BOT_TOKEN: "1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 GOOGLE_CLIENT_ID: "your-google-client-id"
 GOOGLE_CLIENT_SECRET: "your-google-client-secret"
 GOOGLE_REDIRECT_URI: "http://localhost:8050/en/users/google/callback"
-SERVICE_API_KEY: "replace-with-generated-service-token-minimum-32-characters"
-AI_SERVICE_API_KEY: "replace-with-generated-ai-service-token-minimum-32-characters"
-ACCESS_TOKEN_EXPIRE_MINUTES: 4320

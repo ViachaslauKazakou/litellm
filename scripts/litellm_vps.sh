@@ -110,6 +110,6 @@ cd "$REMOTE_DIR"
 sudo docker compose \
   --project-name learn-service \
   --file "$REMOTE_DIR/docker-compose.litellm-prod.yml" \
-  --env-file "$REMOTE_DIR/.env.prod" \
+  --env-file "$REMOTE_DIR/.env.litellm.prod" \
   logs --follow litellm
 REMOTE_SCRIPT
