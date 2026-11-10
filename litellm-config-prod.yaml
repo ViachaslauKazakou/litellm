@@ -64,6 +64,51 @@ model_list:
     model_info:
       supports_function_calling: true
 
+  - model_name: qwen2.5:7b
+    litellm_params:
+      model: ollama/qwen2.5:7b
+      api_base: http://ollama:11434
+      input_cost_per_token: 5.0e-07
+      output_cost_per_token: 1.5e-06
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
+
+  - model_name: qwen2.5:3b
+    litellm_params:
+      model: ollama/qwen2.5:3b
+      api_base: http://ollama:11434
+      input_cost_per_token: 5.0e-07
+      output_cost_per_token: 1.5e-06
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
+
+  - model_name: gemma4:e2b-it-q4_K_M
+    litellm_params:
+      model: ollama/gemma4:e2b-it-q4_K_M
+      api_base: http://ollama:11434
+      input_cost_per_token: 5.0e-07
+      output_cost_per_token: 1.5e-06
+      # Контекст 8k: баланс между качеством и потреблением RAM под KV-кэш на CPU
+      num_ctx: 4096
+      # keep_alive: -1
+      # CPU-инференс медленный: даём запас по таймаутам
+      timeout: 600
+      stream_timeout: 600
+    model_info:
+      supports_function_calling: true
+
   - model_name: whisper-1
     litellm_params:
       model: whisper-1
